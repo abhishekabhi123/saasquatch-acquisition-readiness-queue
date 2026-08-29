@@ -3,12 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:web": "vite",
+    "dev:api": "tsx watch server/index.ts",
+    "start": "tsx server/index.ts",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "seed": "tsx server/seed.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "lucide-react": "latest",
     "papaparse": "latest",
     "react": "latest",
@@ -17,7 +24,12 @@
     "vite": "latest"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5"
+    "@types/react-dom": "^19.2.5",
+    "concurrently": "^10.0.5",
+    "tsx": "^4.23.12"
   }
 }
