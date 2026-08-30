@@ -13,6 +13,7 @@ export type Lead = {
   email: string | null
   phone: string | null
   lastUpdated: string | null
+  inQueue: boolean
 }
 
 export type Icp = {
