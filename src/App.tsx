@@ -130,55 +130,63 @@ export default function App() {
   }, [icp])
 
   // Robust backend health checking
-  useEffect(() => {
-    let intervalId: NodeJS.Timeout | null = null
-    let isMounted = true
+useEffect(() => {
+  let isMounted = true
+  let checking = false
 
-    const checkHealth = async () => {
-      if (!isMounted) return
-      
-      try {
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 3000) // 3 second timeout
-        
-        const response = await fetch('/api/health', {
-          method: 'GET',
-          cache: 'no-cache',
-          signal: controller.signal
-        })
-        
-        clearTimeout(timeoutId)
-        
-        if (response.ok && isMounted) {
-          setBackendConnected(true)
-          setError(null)
-          setIsCheckingConnection(false)
-        } else {
-          throw new Error('Health check failed')
-        }
-      } catch (err) {
-        if (isMounted) {
-          setBackendConnected(false)
-          setIsCheckingConnection(false)
-          // Only show error if we were previously connected
-          if (backendConnected) {
+  const checkHealth = async () => {
+    if (!isMounted || checking) return
+
+    checking = true
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), 3000)
+
+    try {
+      const response = await fetch('/api/health', {
+        method: 'GET',
+        cache: 'no-store',
+        signal: controller.signal
+      })
+
+      if (!response.ok) {
+        throw new Error(`Health check failed: ${response.status}`)
+      }
+
+      if (isMounted) {
+        setBackendConnected(true)
+        setError(null)
+      }
+    } catch (err) {
+      console.error('Backend health check failed:', err)
+
+      if (isMounted) {
+        setBackendConnected((wasConnected) => {
+          if (wasConnected) {
             setError('Backend disconnected. Switching to browser storage mode.')
           }
-        }
+
+          return false
+        })
+      }
+    } finally {
+      window.clearTimeout(timeoutId)
+      checking = false
+
+      if (isMounted) {
+        setIsCheckingConnection(false)
       }
     }
+  }
 
-    // Initial check
-    checkHealth()
+  checkHealth()
 
-    // Periodic checks every 3 seconds
-    intervalId = setInterval(checkHealth, 3000)
+  const intervalId = window.setInterval(checkHealth, 3000)
 
-    return () => {
-      isMounted = false
-      if (intervalId) clearInterval(intervalId)
-    }
-  }, [backendConnected]) // Re-run when backendConnected changes to update error message
+  return () => {
+    isMounted = false
+    window.clearInterval(intervalId)
+  }
+}, [])// Re-run when backendConnected changes to update error message
 
   const persist = async (records: Lead[]) => {
     // Always save to localStorage as backup
