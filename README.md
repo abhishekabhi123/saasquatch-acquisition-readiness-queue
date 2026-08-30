@@ -126,6 +126,7 @@ Quoted fields are supported. Matching websites update the existing record and **
 - `useMemo` recomputes scores only when leads or the ICP change.
 - SQLite WAL is appropriate for this single-node demo.
 - ICP lives in `localStorage` so a refresh does not reset the buy box.
+- **Offline capability**: When the backend is unavailable, the app gracefully degrades to localStorage backup, allowing continued work. A connection status indicator shows the current backend state.
 - Production would move scoring behind a job, cache `importVersion + icpHash` in Redis, and store leads in managed PostgreSQL.
 
 ## Deployment plan

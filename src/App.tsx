@@ -9,6 +9,7 @@ import type { Icp, Lead, ScoredLead } from './types'
 type View = 'queue' | 'discovery' | 'imports'
 const statuses = ['All leads', 'Ready to contact', 'Research first', 'Enrich first', 'Deprioritize'] as const
 const ICP_KEY = 'acquisition-queue-icp'
+const LEADS_KEY = 'acquisition-queue-leads'
 const scoreClass = (score: number) => (score >= 75 ? 'high' : score >= 55 ? 'medium' : 'low')
 const toNumber = (value: string) => Number(value) || 0
 
@@ -58,6 +59,7 @@ export default function App() {
   const [useVirtualScroll, setUseVirtualScroll] = useState(false)
   const tableRef = useRef<HTMLDivElement | null>(null)
   const input = useRef<HTMLInputElement>(null)
+  const [backendConnected, setBackendConnected] = useState(false)
 
   useEffect(() => {
     setLoading(true)
@@ -68,12 +70,31 @@ export default function App() {
         return response.json()
       })
       .then((records: Lead[]) => { 
-        if (records.length) setLeads(records)
+        if (records.length) {
+          setLeads(records)
+          localStorage.setItem(LEADS_KEY, JSON.stringify(records))
+          setBackendConnected(true)
+        }
         setLoading(false)
       })
       .catch((err) => {
         console.error('Load error:', err)
-        setError('Could not load leads from server. Using demo data.')
+        // Try to load from localStorage as fallback
+        const storedLeads = localStorage.getItem(LEADS_KEY)
+        if (storedLeads) {
+          try {
+            const parsed = JSON.parse(storedLeads)
+            setLeads(parsed)
+            setError('Backend disconnected. Using cached data from browser storage. Changes may not persist after refresh.')
+          } catch {
+            setLeads(demoLeads)
+            setError('Backend disconnected. Using demo data. Changes will not persist.')
+          }
+        } else {
+          setLeads(demoLeads)
+          setError('Backend disconnected. Using demo data. Changes will not persist.')
+        }
+        setBackendConnected(false)
         setLoading(false)
       })
   }, [])
@@ -83,6 +104,14 @@ export default function App() {
   }, [icp])
 
   const persist = async (records: Lead[]) => {
+    // Always save to localStorage as backup
+    localStorage.setItem(LEADS_KEY, JSON.stringify(records))
+    
+    if (!backendConnected) {
+      setError('Backend disconnected. Changes saved to browser storage only.')
+      return
+    }
+    
     try {
       const response = await fetch('/api/leads/import', {
         method: 'POST',
@@ -92,7 +121,8 @@ export default function App() {
       if (!response.ok) throw new Error('Failed to save leads to server')
     } catch (err) {
       console.error('Persist error:', err)
-      setError('Could not save leads to server. Changes may not persist.')
+      setBackendConnected(false)
+      setError('Backend disconnected. Changes saved to browser storage only.')
     }
   }
 
@@ -196,6 +226,15 @@ export default function App() {
     const inQueue = !lead.inQueue
     const next = leads.map((item) => (item.id === lead.id ? { ...item, inQueue } : item))
     setLeads(next)
+    
+    // Save to localStorage immediately
+    localStorage.setItem(LEADS_KEY, JSON.stringify(next))
+    
+    if (!backendConnected) {
+      setError('Backend disconnected. Queue change saved to browser storage only.')
+      return
+    }
+    
     try {
       const response = await fetch(`/api/leads/${lead.id}/queue`, {
         method: 'PATCH',
@@ -205,9 +244,8 @@ export default function App() {
       if (!response.ok) throw new Error('Failed to update queue status')
     } catch (err) {
       console.error('Queue toggle error:', err)
-      setError('Could not update queue status. Reverting change.')
-      setLeads(leads) // Revert on error
-      await persist(next)
+      setBackendConnected(false)
+      setError('Backend disconnected. Queue change saved to browser storage only.')
     }
   }
 
@@ -244,6 +282,9 @@ export default function App() {
           )}
         </header>
         {showIcp && <IcpEditor icp={icp} update={updateIcp} reset={() => setIcp(defaultIcp)} />}
+        <div className={`connection-status ${backendConnected ? 'connected' : 'disconnected'}`}>
+          <span>{backendConnected ? '● Backend connected' : '● Backend disconnected - using browser storage'}</span>
+        </div>
         {error && (
           <div className="notice error">
             <CircleAlert size={16} />{error}
