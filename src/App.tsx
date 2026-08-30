@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownToLine, CircleAlert, ClipboardCopy, FileUp, Search, Settings2, Sparkles, X } from 'lucide-react'
 import { crmExportRows, downloadCsv, mergeImportedLeads, parseLeadCsv, queueExportRows } from './csv'
 import { defaultIcp, demoLeads } from './data'
@@ -60,6 +60,13 @@ export default function App() {
   const tableRef = useRef<HTMLDivElement | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const [backendConnected, setBackendConnected] = useState(false)
+  const healthCheckInterval = useRef<NodeJS.Timeout | null>(null)
+  const backendConnectedRef = useRef(backendConnected)
+  
+  // Keep ref in sync with state
+  useEffect(() => {
+    backendConnectedRef.current = backendConnected
+  }, [backendConnected])
 
   useEffect(() => {
     setLoading(true)
@@ -74,6 +81,19 @@ export default function App() {
           setLeads(records)
           localStorage.setItem(LEADS_KEY, JSON.stringify(records))
           setBackendConnected(true)
+        } else {
+          // If no records from backend, try localStorage
+          const storedLeads = localStorage.getItem(LEADS_KEY)
+          if (storedLeads) {
+            try {
+              const parsed = JSON.parse(storedLeads)
+              setLeads(parsed)
+            } catch {
+              setLeads(demoLeads)
+            }
+          } else {
+            setLeads(demoLeads)
+          }
         }
         setLoading(false)
       })
@@ -85,14 +105,14 @@ export default function App() {
           try {
             const parsed = JSON.parse(storedLeads)
             setLeads(parsed)
-            setError('Backend disconnected. Using cached data from browser storage. Changes may not persist after refresh.')
+            setError('Backend disconnected. Using cached data from browser storage.')
           } catch {
             setLeads(demoLeads)
-            setError('Backend disconnected. Using demo data. Changes will not persist.')
+            setError('Backend disconnected. Using demo data.')
           }
         } else {
           setLeads(demoLeads)
-          setError('Backend disconnected. Using demo data. Changes will not persist.')
+          setError('Backend disconnected. Using demo data.')
         }
         setBackendConnected(false)
         setLoading(false)
@@ -103,11 +123,58 @@ export default function App() {
     localStorage.setItem(ICP_KEY, JSON.stringify(icp))
   }, [icp])
 
+  // Periodic health check to detect backend disconnection
+  const checkBackendHealth = useCallback(async () => {
+    try {
+      const response = await fetch('/api/health', { 
+        method: 'GET',
+        cache: 'no-cache' // Ensure we don't get cached responses
+      })
+      if (response.ok) {
+        if (!backendConnectedRef.current) {
+          setBackendConnected(true)
+          setError(null)
+          // Reload data from backend when reconnecting
+          fetch('/api/leads')
+            .then(res => res.json())
+            .then(records => {
+              if (records.length) {
+                setLeads(records)
+                localStorage.setItem(LEADS_KEY, JSON.stringify(records))
+              }
+            })
+            .catch(() => {})
+        }
+      } else {
+        throw new Error('Health check failed')
+      }
+    } catch (err) {
+      if (backendConnectedRef.current) {
+        setBackendConnected(false)
+        setError('Backend disconnected. Switching to browser storage mode.')
+      }
+    }
+  }, []) // Empty deps - this function doesn't depend on any state
+
+  useEffect(() => {
+    // Initial health check
+    checkBackendHealth()
+    
+    // Set up periodic health checks every 5 seconds
+    healthCheckInterval.current = setInterval(checkBackendHealth, 5000)
+    
+    return () => {
+      if (healthCheckInterval.current) {
+        clearInterval(healthCheckInterval.current)
+      }
+    }
+  }, []) // Empty deps - only run once on mount
+
   const persist = async (records: Lead[]) => {
     // Always save to localStorage as backup
     localStorage.setItem(LEADS_KEY, JSON.stringify(records))
     
-    if (!backendConnected) {
+    if (!backendConnectedRef.current) {
       setError('Backend disconnected. Changes saved to browser storage only.')
       return
     }
@@ -230,7 +297,7 @@ export default function App() {
     // Save to localStorage immediately
     localStorage.setItem(LEADS_KEY, JSON.stringify(next))
     
-    if (!backendConnected) {
+    if (!backendConnectedRef.current) {
       setError('Backend disconnected. Queue change saved to browser storage only.')
       return
     }
