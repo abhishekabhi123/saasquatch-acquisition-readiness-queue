@@ -1,3 +1,11 @@
 company,website,industry,location,revenue,employees,contactName,contactTitle,email,phone,lastUpdated
 Northstar Facility Care,northstarfacilitycare.example,Commercial Services,"Phoenix, United States",8400000,68,Maya Ortiz,Founder & CEO,maya@northstarfacilitycare.example,+16025550144,2026-08-22
 BrightPath Therapy Group,brightpaththerapy.example,Healthcare Services,"Austin, United States",4900000,42,Daniel Cho,Co-Founder,daniel@brightpaththerapy.example,+15125550161,2026-08-24
+Keystone Industrial Supply,keystoneindustrial.example,Industrial Distribution,"Columbus, United States",11200000,93,Rachel Dunn,President,rachel@keystoneindustrial.example,,2026-06-14
+Atlas Back Office,atlasbackoffice.example,Business Services,"Denver, United States",2900000,22,James Bennett,Owner,,+13035550190,2026-08-26
+Vantage Home Health,vantagehomehealth.example,Healthcare Services,"Toronto, Canada",7300000,85,Priya Shah,Managing Director,priya@vantagehomehealth.example,+14165550132,2026-08-27
+Evergreen Janitorial,evergreenjanitorial.example,Commercial Services,"Chicago, United States",1250000,13,,,,,2025-12-09
+Northstar Facility Care Duplicate,northstarfacilitycare.example,Commercial Services,"Phoenix, United States",8400000,68,Maya Ortiz,Founder & CEO,maya@northstarfacilitycare.example,,2026-08-22
+Relay Logistics Partners,relaylogistics.example,Logistics,"Nashville, United States",18700000,172,Marcus Lee,CEO,marcus@relaylogistics.example,+16155550109,2026-08-20
+Harbor Dental Partners,harbordental.example,Healthcare Services,"Tampa, United States",3400000,28,Elena Ruiz,Office Manager,front-desk-at-harbor,+18135550177,2026-08-18
+Summit Roofing Co.,summitroofing.example,Commercial Services,"Dallas, United States",1650000,18,Tom Ellison,Owner,tom@summitroofing.example,+12145550128,2026-08-21
