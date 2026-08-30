@@ -1,6 +1,6 @@
 import cors from 'cors'
 import express from 'express'
-import { db } from './db'
+import { db } from './db.js'
 
 type LeadRecord = {
   id: string

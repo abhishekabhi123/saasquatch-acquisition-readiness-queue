@@ -12,6 +12,21 @@ const ICP_KEY = 'acquisition-queue-icp'
 const scoreClass = (score: number) => (score >= 75 ? 'high' : score >= 55 ? 'medium' : 'low')
 const toNumber = (value: string) => Number(value) || 0
 
+function validateIcp(icp: Icp): { valid: boolean; errors: string[] } {
+  const errors: string[] = []
+  
+  if (!icp.industries.length) errors.push('At least one industry is required')
+  if (!icp.locations.length) errors.push('At least one location is required')
+  if (icp.minRevenue < 0) errors.push('Minimum revenue cannot be negative')
+  if (icp.maxRevenue < 0) errors.push('Maximum revenue cannot be negative')
+  if (icp.minRevenue > icp.maxRevenue) errors.push('Minimum revenue cannot exceed maximum revenue')
+  if (icp.minEmployees < 0) errors.push('Minimum employees cannot be negative')
+  if (icp.maxEmployees < 0) errors.push('Maximum employees cannot be negative')
+  if (icp.minEmployees > icp.maxEmployees) errors.push('Minimum employees cannot exceed maximum employees')
+  
+  return { valid: errors.length === 0, errors }
+}
+
 function loadIcp(): Icp {
   try {
     const parsed = JSON.parse(localStorage.getItem(ICP_KEY) ?? '')
@@ -36,25 +51,49 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null)
   const [view, setView] = useState<View>('queue')
   const [strictIcp, setStrictIcp] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [itemsPerPage] = useState(25)
+  const [useVirtualScroll, setUseVirtualScroll] = useState(false)
+  const tableRef = useRef<HTMLDivElement | null>(null)
   const input = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    setLoading(true)
+    setError(null)
     fetch('/api/leads')
-      .then((response) => (response.ok ? response.json() : []))
-      .then((records: Lead[]) => { if (records.length) setLeads(records) })
-      .catch(() => undefined)
+      .then((response) => {
+        if (!response.ok) throw new Error('Failed to load leads from server')
+        return response.json()
+      })
+      .then((records: Lead[]) => { 
+        if (records.length) setLeads(records)
+        setLoading(false)
+      })
+      .catch((err) => {
+        console.error('Load error:', err)
+        setError('Could not load leads from server. Using demo data.')
+        setLoading(false)
+      })
   }, [])
 
   useEffect(() => {
     localStorage.setItem(ICP_KEY, JSON.stringify(icp))
   }, [icp])
 
-  const persist = (records: Lead[]) => {
-    fetch('/api/leads/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leads: records }),
-    }).catch(() => undefined)
+  const persist = async (records: Lead[]) => {
+    try {
+      const response = await fetch('/api/leads/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leads: records }),
+      })
+      if (!response.ok) throw new Error('Failed to save leads to server')
+    } catch (err) {
+      console.error('Persist error:', err)
+      setError('Could not save leads to server. Changes may not persist.')
+    }
   }
 
   const scored = useMemo(() => scoreLeads(leads, icp), [leads, icp])
@@ -63,7 +102,33 @@ export default function App() {
   const ready = scored.filter((lead) => lead.inQueue && lead.status === 'Ready to contact').length
   const duplicates = scored.filter((lead) => lead.isDuplicate).length
   const selected = scored.find((lead) => lead.id === selectedId) ?? null
-  const visible = view === 'queue' ? queueLeads : discoveryLeads
+  const allVisible = view === 'queue' ? queueLeads : discoveryLeads
+  
+  // Pagination logic
+  const totalPages = Math.ceil(allVisible.length / itemsPerPage)
+  const paginatedVisible = allVisible.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
+  
+  // Virtual scrolling logic
+  const [scrollTop, setScrollTop] = useState(0)
+  const rowHeight = 60 // approximate height of each row in pixels
+  
+  const virtualStart = Math.floor(scrollTop / rowHeight)
+  const virtualEnd = Math.min(virtualStart + Math.ceil(600 / rowHeight) + 5, allVisible.length) // Render ~600px viewport + buffer
+  const virtualVisible = allVisible.slice(Math.max(0, virtualStart - 5), virtualEnd)
+  const virtualOffset = Math.max(0, virtualStart - 5) * rowHeight
+  
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1)
+    setScrollTop(0)
+  }, [query, status, strictIcp, view])
+  
+  // Auto-enable virtual scroll for large datasets
+  useEffect(() => {
+    setUseVirtualScroll(allVisible.length > 100)
+  }, [allVisible.length])
+  
+  const visible = useVirtualScroll ? virtualVisible : paginatedVisible
 
   const updateIcp = <K extends keyof Icp>(key: K, value: Icp[K]) => setIcp((current) => ({ ...current, [key]: value }))
   const openImport = () => input.current?.click()
@@ -72,34 +137,78 @@ export default function App() {
   const importCsv = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
+    
+    // Validate file type
+    if (!file.name.endsWith('.csv') && file.type !== 'text/csv' && file.type !== 'application/vnd.ms-excel') {
+      flash('Please upload a CSV file.')
+      return
+    }
+    
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      flash('File is too large. Maximum size is 5MB.')
+      return
+    }
+    
     const reader = new FileReader()
     reader.onload = () => {
       try {
-        const records = parseLeadCsv(String(reader.result))
+        const content = String(reader.result)
+        if (!content.trim()) throw new Error('File is empty')
+        
+        const records = parseLeadCsv(content)
         if (!records.length) throw new Error('No lead rows found')
-        const merged = mergeImportedLeads(leads, records)
+        
+        // Validate imported records
+        const invalidRecords = records.filter(record => 
+          !record.company || !record.website || !record.industry || !record.location
+        )
+        
+        if (invalidRecords.length > 0) {
+          flash(`${invalidRecords.length} records have missing required fields (company, website, industry, location). They were skipped.`)
+        }
+        
+        const validRecords = records.filter(record => 
+          record.company && record.website && record.industry && record.location
+        )
+        
+        if (!validRecords.length) throw new Error('No valid records found after validation')
+        
+        const merged = mergeImportedLeads(leads, validRecords)
         setLeads(merged)
         setSelectedId(null)
         persist(merged)
-        flash(`Imported ${records.length} rows without wiping the queue. Review them in discovery, then add only the ones worth a call.`)
+        flash(`Imported ${validRecords.length} valid rows${invalidRecords.length ? ` (${invalidRecords.length} invalid skipped)` : ''} without wiping the queue. Review them in discovery, then add only the ones worth a call.`)
         setView('discovery')
-      } catch {
+      } catch (err) {
+        console.error('Import error:', err)
         flash('Could not read that CSV. Use the headers in demo-leads.csv.')
       }
+    }
+    reader.onerror = () => {
+      flash('Error reading file. Please try again.')
     }
     reader.readAsText(file)
     event.target.value = ''
   }
 
-  const toggleQueue = (lead: ScoredLead) => {
+  const toggleQueue = async (lead: ScoredLead) => {
     const inQueue = !lead.inQueue
     const next = leads.map((item) => (item.id === lead.id ? { ...item, inQueue } : item))
     setLeads(next)
-    fetch(`/api/leads/${lead.id}/queue`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inQueue }),
-    }).catch(() => persist(next))
+    try {
+      const response = await fetch(`/api/leads/${lead.id}/queue`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inQueue }),
+      })
+      if (!response.ok) throw new Error('Failed to update queue status')
+    } catch (err) {
+      console.error('Queue toggle error:', err)
+      setError('Could not update queue status. Reverting change.')
+      setLeads(leads) // Revert on error
+      await persist(next)
+    }
   }
 
   const copyBrief = async () => {
@@ -135,10 +244,21 @@ export default function App() {
           )}
         </header>
         {showIcp && <IcpEditor icp={icp} update={updateIcp} reset={() => setIcp(defaultIcp)} />}
+        {error && (
+          <div className="notice error">
+            <CircleAlert size={16} />{error}
+            <button aria-label="Dismiss message" onClick={() => setError(null)}><X size={15} /></button>
+          </div>
+        )}
         {notice && (
           <div className="notice">
             <CircleAlert size={16} />{notice}
             <button aria-label="Dismiss message" onClick={() => setNotice(null)}><X size={15} /></button>
+          </div>
+        )}
+        {loading && (
+          <div className="notice loading">
+            <CircleAlert size={16} />Loading leads from server...
           </div>
         )}
         <input className="hide" ref={input} type="file" accept=".csv,text/csv" onChange={importCsv} />
@@ -191,6 +311,15 @@ export default function App() {
                 title={view === 'queue' ? 'Prioritized outreach queue' : 'Lead universe'}
                 discovery={view === 'discovery'}
                 toggleQueue={toggleQueue}
+                totalCount={allVisible.length}
+                currentPage={currentPage}
+                totalPages={totalPages}
+                onPageChange={setCurrentPage}
+                useVirtualScroll={useVirtualScroll}
+                virtualOffset={virtualOffset}
+                totalHeight={allVisible.length * rowHeight}
+                onScroll={setScrollTop}
+                tableRef={tableRef}
               />
               <Detail lead={selected ?? visible[0] ?? null} icp={icp} />
             </section>
@@ -216,6 +345,8 @@ function Nav({ view, setView }: { view: View; setView: (view: View) => void }) {
 }
 
 function IcpEditor({ icp, update, reset }: { icp: Icp; update: <K extends keyof Icp>(key: K, value: Icp[K]) => void; reset: () => void }) {
+  const validation = validateIcp(icp)
+  
   return (
     <section className="icp">
       <div className="icp-heading">
@@ -224,10 +355,15 @@ function IcpEditor({ icp, update, reset }: { icp: Icp; update: <K extends keyof 
       </div>
       <label>Industries<input value={icp.industries.join(', ')} onChange={(event) => update('industries', event.target.value.split(',').map((value) => value.trim()).filter(Boolean))} /></label>
       <label>Geography<input value={icp.locations.join(', ')} onChange={(event) => update('locations', event.target.value.split(',').map((value) => value.trim()).filter(Boolean))} /></label>
-      <label>Min revenue<input type="number" value={icp.minRevenue} onChange={(event) => update('minRevenue', toNumber(event.target.value))} /></label>
-      <label>Max revenue<input type="number" value={icp.maxRevenue} onChange={(event) => update('maxRevenue', toNumber(event.target.value))} /></label>
-      <label>Min employees<input type="number" value={icp.minEmployees} onChange={(event) => update('minEmployees', toNumber(event.target.value))} /></label>
-      <label>Max employees<input type="number" value={icp.maxEmployees} onChange={(event) => update('maxEmployees', toNumber(event.target.value))} /></label>
+      <label>Min revenue<input type="number" min="0" value={icp.minRevenue} onChange={(event) => update('minRevenue', toNumber(event.target.value))} /></label>
+      <label>Max revenue<input type="number" min="0" value={icp.maxRevenue} onChange={(event) => update('maxRevenue', toNumber(event.target.value))} /></label>
+      <label>Min employees<input type="number" min="0" value={icp.minEmployees} onChange={(event) => update('minEmployees', toNumber(event.target.value))} /></label>
+      <label>Max employees<input type="number" min="0" value={icp.maxEmployees} onChange={(event) => update('maxEmployees', toNumber(event.target.value))} /></label>
+      {!validation.valid && (
+        <div className="icp-errors">
+          {validation.errors.map((error, i) => <small key={i}>{error}</small>)}
+        </div>
+      )}
       <button onClick={reset}>Reset profile</button>
     </section>
   )
@@ -245,14 +381,29 @@ function ImportScreen({ openImport }: { openImport: () => void }) {
   )
 }
 
-function LeadTable({ leads, selected, setSelected, title, discovery, toggleQueue }: {
+function LeadTable({ leads, selected, setSelected, title, discovery, toggleQueue, totalCount, currentPage, totalPages, onPageChange, useVirtualScroll, virtualOffset, totalHeight, onScroll, tableRef }: {
   leads: ScoredLead[]
   selected: ScoredLead | null
   setSelected: (id: string) => void
   title: string
   discovery: boolean
   toggleQueue: (lead: ScoredLead) => void
+  totalCount: number
+  currentPage: number
+  totalPages: number
+  onPageChange: (page: number) => void
+  useVirtualScroll: boolean
+  virtualOffset: number
+  totalHeight: number
+  onScroll: (scrollTop: number) => void
+  tableRef: React.RefObject<HTMLDivElement | null>
 }) {
+  const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    if (useVirtualScroll) {
+      onScroll(event.currentTarget.scrollTop)
+    }
+  }
+
   return (
     <div className="table">
       <div className="table-title">
@@ -260,45 +411,76 @@ function LeadTable({ leads, selected, setSelected, title, discovery, toggleQueue
           <h2>{title}</h2>
           <p>{discovery ? 'Review every record, then deliberately add candidates to your working queue.' : 'Scores are transparent and update with your ICP.'}</p>
         </div>
-        <span>{leads.length} results</span>
+        <span>{totalCount} results</span>
       </div>
-      <div className="table-overflow">
-        <table>
-          <thead>
-            <tr>
-              <th>Company</th>
-              <th>{discovery ? 'Profile fit' : 'Fit score'}</th>
-              <th>Why it ranks</th>
-              <th>{discovery ? 'Queue' : 'Next action'}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {leads.map((lead) => (
-              <tr key={lead.id} onClick={() => setSelected(lead.id)} className={selected?.id === lead.id ? 'selected' : ''}>
-                <td>
-                  <b>{lead.company}</b>
-                  <span>{lead.industry} · {lead.location}</span>
-                </td>
-                <td><i className={`score ${scoreClass(lead.score)}`}>{lead.score}</i></td>
-                <td>
-                  <span>{lead.factors.filter((factor) => factor.points === factor.max).slice(0, 2).map((factor) => factor.label).join(' · ') || 'Needs review'}</span>
-                  {lead.flags[0] && <small>{lead.flags[0]}</small>}
-                </td>
-                <td>
-                  {discovery ? (
-                    <button className={lead.inQueue ? 'queue-button added' : 'queue-button'} onClick={(event) => { event.stopPropagation(); toggleQueue(lead) }}>
-                      {lead.inQueue ? 'Remove' : 'Add to queue'}
-                    </button>
-                  ) : (
-                    <Status s={lead.status} />
-                  )}
-                </td>
+      <div 
+        className="table-overflow" 
+        ref={tableRef}
+        onScroll={handleScroll}
+        style={useVirtualScroll ? { height: '600px', overflowY: 'auto' } : {}}
+      >
+        <div style={useVirtualScroll ? { height: `${totalHeight}px`, position: 'relative' } : {}}>
+          <table style={useVirtualScroll ? { position: 'absolute', top: `${virtualOffset}px`, width: '100%' } : {}}>
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>{discovery ? 'Profile fit' : 'Fit score'}</th>
+                <th>Why it ranks</th>
+                <th>{discovery ? 'Queue' : 'Next action'}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {leads.map((lead) => (
+                <tr key={lead.id} onClick={() => setSelected(lead.id)} className={selected?.id === lead.id ? 'selected' : ''}>
+                  <td>
+                    <b>{lead.company}</b>
+                    <span>{lead.industry} · {lead.location}</span>
+                  </td>
+                  <td><i className={`score ${scoreClass(lead.score)}`}>{lead.score}</i></td>
+                  <td>
+                    <span>{lead.factors.filter((factor) => factor.points === factor.max).slice(0, 2).map((factor) => factor.label).join(' · ') || 'Needs review'}</span>
+                    {lead.flags[0] && <small>{lead.flags[0]}</small>}
+                  </td>
+                  <td>
+                    {discovery ? (
+                      <button className={lead.inQueue ? 'queue-button added' : 'queue-button'} onClick={(event) => { event.stopPropagation(); toggleQueue(lead) }}>
+                        {lead.inQueue ? 'Remove' : 'Add to queue'}
+                      </button>
+                    ) : (
+                      <Status s={lead.status} />
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         {!leads.length && <div className="empty">No leads match these filters.</div>}
       </div>
+      {!useVirtualScroll && totalPages > 1 && (
+        <div className="pagination">
+          <button 
+            onClick={() => onPageChange(currentPage - 1)} 
+            disabled={currentPage === 1}
+            className="outline"
+          >
+            Previous
+          </button>
+          <span>Page {currentPage} of {totalPages}</span>
+          <button 
+            onClick={() => onPageChange(currentPage + 1)} 
+            disabled={currentPage === totalPages}
+            className="outline"
+          >
+            Next
+          </button>
+        </div>
+      )}
+      {useVirtualScroll && (
+        <div className="virtual-scroll-info">
+          <small>Virtual scrolling enabled for performance ({totalCount} items)</small>
+        </div>
+      )}
     </div>
   )
 }
