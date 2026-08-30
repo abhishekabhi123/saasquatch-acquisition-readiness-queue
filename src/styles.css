@@ -441,6 +441,11 @@ progress {
   border: 1px solid #fecaca;
   color: #991b1b;
 }
+.connection-status.checking {
+  background: #fefce8;
+  border: 1px solid #fef08a;
+  color: #854d0e;
+}
 .connection-status span {
   font-size: 10px;
   font-weight: 600;

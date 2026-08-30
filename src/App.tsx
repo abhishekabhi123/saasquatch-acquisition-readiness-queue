@@ -1,4 +1,4 @@
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownToLine, CircleAlert, ClipboardCopy, FileUp, Search, Settings2, Sparkles, X } from 'lucide-react'
 import { crmExportRows, downloadCsv, mergeImportedLeads, parseLeadCsv, queueExportRows } from './csv'
 import { defaultIcp, demoLeads } from './data'
@@ -60,136 +60,151 @@ export default function App() {
   const tableRef = useRef<HTMLDivElement | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const [backendConnected, setBackendConnected] = useState(false)
-  const healthCheckInterval = useRef<NodeJS.Timeout | null>(null)
-  const backendConnectedRef = useRef(backendConnected)
-  
-  // Keep ref in sync with state
-  useEffect(() => {
-    backendConnectedRef.current = backendConnected
-  }, [backendConnected])
+  const [isCheckingConnection, setIsCheckingConnection] = useState(true)
 
   useEffect(() => {
-    setLoading(true)
-    setError(null)
-    fetch('/api/leads')
-      .then((response) => {
-        if (!response.ok) throw new Error('Failed to load leads from server')
-        return response.json()
-      })
-      .then((records: Lead[]) => { 
-        if (records.length) {
-          setLeads(records)
-          localStorage.setItem(LEADS_KEY, JSON.stringify(records))
-          setBackendConnected(true)
-        } else {
-          // If no records from backend, try localStorage
-          const storedLeads = localStorage.getItem(LEADS_KEY)
-          if (storedLeads) {
-            try {
-              const parsed = JSON.parse(storedLeads)
-              setLeads(parsed)
-            } catch {
+    const loadInitialData = async () => {
+      setLoading(true)
+      setError(null)
+      
+      try {
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 5000) // 5 second timeout
+        
+        const response = await fetch('/api/leads', {
+          signal: controller.signal
+        })
+        
+        clearTimeout(timeoutId)
+        
+        if (response.ok) {
+          const records = await response.json()
+          if (records.length) {
+            setLeads(records)
+            localStorage.setItem(LEADS_KEY, JSON.stringify(records))
+            setBackendConnected(true)
+          } else {
+            // Backend connected but no data, try localStorage
+            const storedLeads = localStorage.getItem(LEADS_KEY)
+            if (storedLeads) {
+              try {
+                const parsed = JSON.parse(storedLeads)
+                setLeads(parsed)
+              } catch {
+                setLeads(demoLeads)
+              }
+            } else {
               setLeads(demoLeads)
             }
-          } else {
-            setLeads(demoLeads)
+            setBackendConnected(true)
           }
+        } else {
+          throw new Error('Failed to load leads')
         }
-        setLoading(false)
-      })
-      .catch((err) => {
+      } catch (err) {
         console.error('Load error:', err)
+        setBackendConnected(false)
+        
         // Try to load from localStorage as fallback
         const storedLeads = localStorage.getItem(LEADS_KEY)
         if (storedLeads) {
           try {
             const parsed = JSON.parse(storedLeads)
             setLeads(parsed)
-            setError('Backend disconnected. Using cached data from browser storage.')
           } catch {
             setLeads(demoLeads)
-            setError('Backend disconnected. Using demo data.')
           }
         } else {
           setLeads(demoLeads)
-          setError('Backend disconnected. Using demo data.')
         }
-        setBackendConnected(false)
-        setLoading(false)
-      })
+      }
+      
+      setLoading(false)
+    }
+    
+    loadInitialData()
   }, [])
 
   useEffect(() => {
     localStorage.setItem(ICP_KEY, JSON.stringify(icp))
   }, [icp])
 
-  // Periodic health check to detect backend disconnection
-  const checkBackendHealth = useCallback(async () => {
-    try {
-      const response = await fetch('/api/health', { 
-        method: 'GET',
-        cache: 'no-cache' // Ensure we don't get cached responses
-      })
-      if (response.ok) {
-        if (!backendConnectedRef.current) {
+  // Robust backend health checking
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout | null = null
+    let isMounted = true
+
+    const checkHealth = async () => {
+      if (!isMounted) return
+      
+      try {
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 3000) // 3 second timeout
+        
+        const response = await fetch('/api/health', {
+          method: 'GET',
+          cache: 'no-cache',
+          signal: controller.signal
+        })
+        
+        clearTimeout(timeoutId)
+        
+        if (response.ok && isMounted) {
           setBackendConnected(true)
           setError(null)
-          // Reload data from backend when reconnecting
-          fetch('/api/leads')
-            .then(res => res.json())
-            .then(records => {
-              if (records.length) {
-                setLeads(records)
-                localStorage.setItem(LEADS_KEY, JSON.stringify(records))
-              }
-            })
-            .catch(() => {})
+          setIsCheckingConnection(false)
+        } else {
+          throw new Error('Health check failed')
         }
-      } else {
-        throw new Error('Health check failed')
-      }
-    } catch (err) {
-      if (backendConnectedRef.current) {
-        setBackendConnected(false)
-        setError('Backend disconnected. Switching to browser storage mode.')
+      } catch (err) {
+        if (isMounted) {
+          setBackendConnected(false)
+          setIsCheckingConnection(false)
+          // Only show error if we were previously connected
+          if (backendConnected) {
+            setError('Backend disconnected. Switching to browser storage mode.')
+          }
+        }
       }
     }
-  }, []) // Empty deps - this function doesn't depend on any state
 
-  useEffect(() => {
-    // Initial health check
-    checkBackendHealth()
-    
-    // Set up periodic health checks every 5 seconds
-    healthCheckInterval.current = setInterval(checkBackendHealth, 5000)
-    
+    // Initial check
+    checkHealth()
+
+    // Periodic checks every 3 seconds
+    intervalId = setInterval(checkHealth, 3000)
+
     return () => {
-      if (healthCheckInterval.current) {
-        clearInterval(healthCheckInterval.current)
-      }
+      isMounted = false
+      if (intervalId) clearInterval(intervalId)
     }
-  }, []) // Empty deps - only run once on mount
+  }, [backendConnected]) // Re-run when backendConnected changes to update error message
 
   const persist = async (records: Lead[]) => {
     // Always save to localStorage as backup
     localStorage.setItem(LEADS_KEY, JSON.stringify(records))
     
-    if (!backendConnectedRef.current) {
-      setError('Backend disconnected. Changes saved to browser storage only.')
-      return
+    if (!backendConnected) {
+      return // Silently use localStorage when backend is disconnected
     }
     
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000) // 5 second timeout
+      
       const response = await fetch('/api/leads/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ leads: records }),
+        signal: controller.signal
       })
+      
+      clearTimeout(timeoutId)
+      
       if (!response.ok) throw new Error('Failed to save leads to server')
     } catch (err) {
       console.error('Persist error:', err)
-      setBackendConnected(false)
-      setError('Backend disconnected. Changes saved to browser storage only.')
+      setBackendConnected(false) // Update connection status on failure
     }
   }
 
@@ -297,22 +312,27 @@ export default function App() {
     // Save to localStorage immediately
     localStorage.setItem(LEADS_KEY, JSON.stringify(next))
     
-    if (!backendConnectedRef.current) {
-      setError('Backend disconnected. Queue change saved to browser storage only.')
-      return
+    if (!backendConnected) {
+      return // Silently use localStorage when backend is disconnected
     }
     
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000) // 5 second timeout
+      
       const response = await fetch(`/api/leads/${lead.id}/queue`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ inQueue }),
+        signal: controller.signal
       })
+      
+      clearTimeout(timeoutId)
+      
       if (!response.ok) throw new Error('Failed to update queue status')
     } catch (err) {
       console.error('Queue toggle error:', err)
-      setBackendConnected(false)
-      setError('Backend disconnected. Queue change saved to browser storage only.')
+      setBackendConnected(false) // Update connection status on failure
     }
   }
 
@@ -349,8 +369,11 @@ export default function App() {
           )}
         </header>
         {showIcp && <IcpEditor icp={icp} update={updateIcp} reset={() => setIcp(defaultIcp)} />}
-        <div className={`connection-status ${backendConnected ? 'connected' : 'disconnected'}`}>
-          <span>{backendConnected ? '● Backend connected' : '● Backend disconnected - using browser storage'}</span>
+        <div className={`connection-status ${backendConnected ? 'connected' : 'disconnected'} ${isCheckingConnection ? 'checking' : ''}`}>
+          <span>
+            {isCheckingConnection ? '● Checking backend connection...' : 
+             backendConnected ? '● Backend connected' : '● Backend disconnected - using browser storage'}
+          </span>
         </div>
         {error && (
           <div className="notice error">
