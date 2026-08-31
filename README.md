@@ -129,15 +129,6 @@ Quoted fields are supported. Matching websites update the existing record and **
 - **Offline capability**: When the backend is unavailable, the app gracefully degrades to localStorage backup, allowing continued work. A connection status indicator shows the current backend state.
 - Production would move scoring behind a job, cache `importVersion + icpHash` in Redis, and store leads in managed PostgreSQL.
 
-## Deployment plan
-
-1. Static React bundle on Vercel or Cloudflare Pages.
-2. Express on Render, Railway, Fly.io, AWS ECS, or Cloud Run.
-3. Managed Postgres (Neon / RDS / Cloud SQL); secrets in the provider’s secret manager.
-4. Point `VITE_API_BASE_URL` at the API. The Vite proxy covers local development only.
-5. Add auth, rate limits, Sentry, structured logs, and backups before multi-user use.
-
-The client is static. The API is serverful. They scale independently.
 
 ## Data ethics
 
@@ -150,10 +141,3 @@ This submission does **not** scrape sites, rotate IPs, solve CAPTCHAs, or bypass
 - SQLite is not a multi-region production database.
 - No live enrichment vendor.
 
-## Two-minute walkthrough
-
-Use [docs/VIDEO_SCRIPT.md](docs/VIDEO_SCRIPT.md). Handbook written answers are in [docs/HANDBOOK.md](docs/HANDBOOK.md). The email packet is in [docs/EMAIL_DRAFT.md](docs/EMAIL_DRAFT.md).
-
-## Repository
-
-https://github.com/abhishekabhi123/saasquatch-acquisition-readiness-queue
